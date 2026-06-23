@@ -1,4 +1,5 @@
 -- Supabase SQL Editor에서 실행하세요.
+-- (이미 테이블을 만든 경우에도 아래 ALTER는 안전하게 재실행 가능합니다.)
 
 create table if not exists public.lotto_draws (
   id uuid primary key default gen_random_uuid(),
@@ -12,11 +13,9 @@ create table if not exists public.lotto_draws (
 create index if not exists lotto_draws_client_created_idx
   on public.lotto_draws (client_id, created_at desc);
 
-alter table public.lotto_draws enable row level security;
+-- API는 service_role key로 접근합니다. RLS는 비활성화합니다.
+alter table public.lotto_draws disable row level security;
 
--- API는 service role key로 접근하므로 RLS 정책은 선택 사항입니다.
--- anon key를 클라이언트에서 직접 쓸 경우를 대비한 예시 정책:
--- create policy "read own draws" on public.lotto_draws
---   for select using (true);
--- create policy "insert own draws" on public.lotto_draws
---   for insert with check (true);
+grant usage on schema public to postgres, anon, authenticated, service_role;
+grant all on public.lotto_draws to postgres, service_role;
+grant select, insert, delete on public.lotto_draws to anon, authenticated;
