@@ -903,6 +903,22 @@
       white-space: nowrap;
     }
 
+    .history-source {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: -0.08px;
+      color: var(--primary);
+      background: rgba(0, 102, 204, 0.08);
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-right: 4px;
+    }
+
+    .history-source.saju {
+      color: #7c3aed;
+      background: rgba(124, 58, 237, 0.08);
+    }
+
     /* archive */
     .latest-card {
       padding: var(--spacing-lg);
@@ -1535,7 +1551,7 @@
 
       <section class="utility-card" id="historySection" hidden>
         <div class="history-header">
-          <h2>추첨 기록</h2>
+          <h2>추첨 기록 <span style="font-size:12px;font-weight:400;color:var(--body-muted)">· Supabase 저장</span></h2>
           <button class="btn-pearl" id="clearHistory" type="button">기록 삭제</button>
         </div>
         <div class="history-list" id="historyList"></div>
@@ -1660,11 +1676,57 @@
     const drawGameLabel = document.getElementById('drawGameLabel');
     const resultsSummary = document.getElementById('resultsSummary');
 
-    let history = JSON.parse(localStorage.getItem('lottoHistory') || '[]');
+    let history = [];
     let drumMixInterval = null;
     let displaySlotEls = [];
 
-    renderHistory();
+    function getClientId() {
+      let id = localStorage.getItem('lottoClientId');
+      if (!id) {
+        id = crypto.randomUUID();
+        localStorage.setItem('lottoClientId', id);
+      }
+      return id;
+    }
+
+    async function saveLottoHistory({ source, games, meta = {} }) {
+      try {
+        const res = await fetch('/api/lotto-history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clientId: getClientId(), source, games, meta })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          console.warn('Supabase 저장 실패:', err.error);
+          return null;
+        }
+        return res.json();
+      } catch (err) {
+        console.warn('Supabase 저장 실패:', err);
+        return null;
+      }
+    }
+
+    async function loadHistory() {
+      try {
+        const res = await fetch(`/api/lotto-history?clientId=${encodeURIComponent(getClientId())}&limit=20`);
+        if (!res.ok) throw new Error('load failed');
+        const rows = await res.json();
+        history = rows.map(row => ({
+          id: row.id,
+          time: row.created_at,
+          source: row.source,
+          games: row.games,
+          meta: row.meta || {}
+        }));
+      } catch {
+        history = JSON.parse(localStorage.getItem('lottoHistory') || '[]');
+      }
+      renderHistory();
+    }
+
+    loadHistory();
     initDrumBalls();
     buildDisplaySlots(bonusCheckbox.checked);
 
@@ -1892,13 +1954,16 @@
 
       drawGameLabel.textContent = '';
 
+      const games = rows.map(r => ({ main: r.main, bonus: r.bonus }));
+      const saved = await saveLottoHistory({ source: 'draw', games });
       const entry = {
-        time: new Date().toISOString(),
-        games: rows.map(r => ({ main: r.main, bonus: r.bonus }))
+        id: saved?.id,
+        time: saved?.created_at || new Date().toISOString(),
+        source: 'draw',
+        games
       };
       history.unshift(entry);
       if (history.length > 20) history = history.slice(0, 20);
-      localStorage.setItem('lottoHistory', JSON.stringify(history));
       renderHistory();
 
       drawBtn.disabled = false;
@@ -1915,6 +1980,11 @@
       history.forEach(entry => {
         const item = document.createElement('div');
         item.className = 'history-item';
+
+        const sourceTag = document.createElement('span');
+        sourceTag.className = `history-source${entry.source === 'saju' ? ' saju' : ''}`;
+        sourceTag.textContent = entry.source === 'saju' ? '사주' : '추첨';
+        item.appendChild(sourceTag);
 
         entry.games.forEach((game, gi) => {
           if (entry.games.length > 1) {
@@ -1958,7 +2028,16 @@
 
     drawBtn.addEventListener('click', draw);
 
-    clearHistoryBtn.addEventListener('click', () => {
+    clearHistoryBtn.addEventListener('click', async () => {
+      try {
+        await fetch('/api/lotto-history', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clientId: getClientId() })
+        });
+      } catch (err) {
+        console.warn('Supabase 삭제 실패:', err);
+      }
       history = [];
       localStorage.removeItem('lottoHistory');
       renderHistory();
@@ -2139,6 +2218,30 @@
         ].filter(Boolean).join('\n');
 
         chatHistory.push({ role: 'assistant', content: assistantText });
+
+        if (!isFollowUp && data.numbers?.length === 6 && sajuProfile) {
+          const saved = await saveLottoHistory({
+            source: 'saju',
+            games: [{ main: data.numbers, bonus: data.bonus ?? null }],
+            meta: {
+              gender: sajuProfile.gender,
+              birthDate: sajuProfile.birthDate,
+              sajuSummary: data.sajuSummary || ''
+            }
+          });
+          if (saved) {
+            history.unshift({
+              id: saved.id,
+              time: saved.created_at,
+              source: 'saju',
+              games: [{ main: data.numbers, bonus: data.bonus ?? null }],
+              meta: saved.meta || {}
+            });
+            if (history.length > 20) history = history.slice(0, 20);
+            renderHistory();
+          }
+        }
+
         chatInput.disabled = false;
         chatSendBtn.disabled = false;
       } catch (err) {
